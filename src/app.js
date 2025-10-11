@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import authRoutes from "./routes/auth.routes.js";
+import airtableRoutes from "./routes/airtable.routes.js";
 
 dotenv.config();
 
@@ -13,5 +14,6 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use("/api/auth", authRoutes);
+app.use("/api/airtable", airtableRoutes);
 
 export default app;
