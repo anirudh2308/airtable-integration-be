@@ -56,24 +56,60 @@ async function loginAndSaveSession(mfaCode = null) {
 
 		console.log("🔐 Entering MFA code...");
 		await page.type('input[name="code"]', mfaCode, { delay: 50 });
-		await page.click('button[type="submit"]');
+		try {
+			// Wait for the visible "Submit" div (blue button)
+			await page.waitForSelector("div.link-quiet.text-white.pointer", {
+				visible: true,
+				timeout: 5000,
+			});
+			console.log("🔘 Clicking MFA Submit button...");
+			await page.click("div.link-quiet.text-white.pointer");
+		} catch (e) {
+			console.warn("⚠️ Could not find MFA button, pressing Enter instead...");
+			await page.keyboard.press("Enter");
+		}
+
+		// Now wait for navigation or dashboard to load
+		try {
+			await page.waitForNavigation({
+				waitUntil: "networkidle2",
+				timeout: 20000,
+			});
+		} catch {
+			console.warn("⚠️ No navigation after MFA — continuing anyway...");
+		}
 	} catch (err) {
 		if (!err.message.includes("MFA code"))
 			console.log("No MFA prompt detected, continuing...");
 	}
 
-	await page.waitForNavigation({ waitUntil: "networkidle2" });
+	// Wait until the Airtable dashboard (base list) appears
+	try {
+		await page.waitForSelector(
+			'[data-testid="baseDashboard"], [data-testid="baseGrid"]',
+			{
+				visible: true,
+				timeout: 20000,
+			}
+		);
+		console.log("✅ Dashboard detected — extracting cookies...");
+	} catch {
+		console.warn("⚠️ Dashboard not detected; saving cookies anyway...");
+	}
 
+	// collect cookies + localStorage
 	const cookies = await page.cookies();
 	const localStorageData = await page.evaluate(() =>
 		Object.assign({}, window.localStorage)
 	);
+
 	fs.writeFileSync("cookies.json", JSON.stringify(cookies, null, 2));
 	fs.writeFileSync(
 		"localStorage.json",
 		JSON.stringify(localStorageData, null, 2)
 	);
 
+	console.log(`💾 Saved ${cookies.length} cookies`);
 	await browser.close();
 	console.log("✅ Session refreshed and saved");
 }
