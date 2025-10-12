@@ -2,6 +2,7 @@ import express from "express";
 import fs from "fs";
 import * as cheerio from "cheerio";
 import puppeteer from "puppeteer";
+import Page from "../models/page.model.js";
 import Scraper from "../models/scraper.model.js";
 
 const router = express.Router();
@@ -123,6 +124,71 @@ router.get("/login", async (req, res) => {
 		res.send("✅ Logged in and cookies refreshed");
 	} catch (err) {
 		res.status(500).send("❌ Login failed");
+	}
+});
+
+router.get("/run-all", async (req, res) => {
+	try {
+		const pages = await Page.find({});
+		if (!pages.length) return res.status(404).send("No pages found");
+
+		for (const page of pages) {
+			console.log(`🧩 Scraping record ${page.id}...`);
+			try {
+				let data;
+				try {
+					data = await scrapeRecord(page.id);
+				} catch (err) {
+					if (err.message.includes("HTTP 401")) {
+						console.log("🔄 Session expired — refreshing...");
+						await loginAndSaveSession();
+						data = await scrapeRecord(page.id);
+					} else {
+						throw err;
+					}
+				}
+
+				const info = data.data;
+				const ordered = info.orderedActivityAndCommentIds || [];
+				const activities = info.rowActivityInfoById || {};
+				const users = info.rowActivityOrCommentUserObjById || {};
+
+				const parsed = [];
+				for (const id of ordered) {
+					const a = activities[id];
+					if (!a) continue;
+
+					const user = users[a.originatingUserId];
+					const $ = cheerio.load(a.diffRowHtml);
+					const columnType =
+						$(".historicalCellValue").attr("data-columntype") || null;
+					const oldValue =
+						$(".colors-background-negative").text().trim() || null;
+					const newValue =
+						$(".colors-background-success").text().trim() || null;
+
+					parsed.push({
+						uuid: id,
+						issueId: page.id,
+						columnType,
+						oldValue,
+						newValue,
+						createdDate: new Date(a.createdTime),
+						authoredBy: user?.name || a.originatingUserId,
+					});
+				}
+
+				await Scraper.create({ recordId: page.id, data: parsed });
+				console.log(`✅ Saved ${parsed.length} activities for ${page.id}`);
+			} catch (err) {
+				console.error(`❌ Error scraping ${page.id}:`, err.message);
+			}
+		}
+
+		res.send("✅ Finished scraping all pages");
+	} catch (err) {
+		console.error("❌ run-all error:", err);
+		res.status(500).send(`Scraper failed: ${err.message}`);
 	}
 });
 
