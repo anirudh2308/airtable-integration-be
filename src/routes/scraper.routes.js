@@ -59,20 +59,18 @@ async function loginAndSaveSession() {
 	}
 }
 
-async function scrapeRecord(recordId) {
+async function scrapeRecord(page, recordId) {
 	const cookies = JSON.parse(fs.readFileSync("cookies.json", "utf8"));
 	const localStorageData = JSON.parse(
 		fs.readFileSync("localStorage.json", "utf8")
 	);
-	const browser = await puppeteer.launch({ headless: true });
-	const page = await browser.newPage();
 
 	await page.goto("about:blank");
 	await page.setCookie(...cookies);
 
 	const baseId = "apprR2ayoUZ0PVCgJ";
 	await page.goto(`https://airtable.com/${baseId}`, {
-		waitUntil: "networkidle2",
+		waitUntil: "domcontentloaded",
 	});
 
 	await page.evaluate((data) => {
@@ -99,23 +97,16 @@ async function scrapeRecord(recordId) {
 		referer: `https://airtable.com/${baseId}`,
 	};
 
-	try {
-		const responseText = await page.evaluate(
-			async ({ url, headers }) => {
-				const resp = await fetch(url, { headers, credentials: "include" });
-				if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-				return await resp.text();
-			},
-			{ url, headers }
-		);
+	const responseText = await page.evaluate(
+		async ({ url, headers }) => {
+			const resp = await fetch(url, { headers, credentials: "include" });
+			if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+			return await resp.text();
+		},
+		{ url, headers }
+	);
 
-		const data = JSON.parse(responseText);
-		await browser.close();
-		return data;
-	} catch (err) {
-		await browser.close();
-		throw err;
-	}
+	return JSON.parse(responseText);
 }
 
 router.get("/login", async (req, res) => {
@@ -132,20 +123,37 @@ router.get("/run-all", async (req, res) => {
 		const pages = await Page.find({});
 		if (!pages.length) return res.status(404).send("No pages found");
 
-		for (const page of pages) {
-			console.log(`🧩 Scraping record ${page.id}...`);
+		// launch one browser for all scrapes
+		const browser = await puppeteer.launch({
+			headless: true,
+			args: [
+				"--no-sandbox",
+				"--disable-setuid-sandbox",
+				"--disable-blink-features=AutomationControlled",
+				"--window-size=1280,800",
+			],
+		});
+		const page = await browser.newPage();
+		await page.setViewport({ width: 1280, height: 800 });
+		await page.setUserAgent(
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+		);
+
+		const baseId = "apprR2ayoUZ0PVCgJ";
+
+		for (const doc of pages) {
+			const recordId = doc.id;
+			console.log(`🧩 Scraping record ${recordId}...`);
 			try {
 				let data;
 				try {
-					data = await scrapeRecord(page.id);
+					data = await scrapeRecord(page, recordId);
 				} catch (err) {
 					if (err.message.includes("HTTP 401")) {
-						console.log("🔄 Session expired — refreshing...");
+						console.log("🔄 Session expired — refreshing login...");
 						await loginAndSaveSession();
-						data = await scrapeRecord(page.id);
-					} else {
-						throw err;
-					}
+						data = await scrapeRecord(page, recordId);
+					} else throw err;
 				}
 
 				const info = data.data;
@@ -157,7 +165,6 @@ router.get("/run-all", async (req, res) => {
 				for (const id of ordered) {
 					const a = activities[id];
 					if (!a) continue;
-
 					const user = users[a.originatingUserId];
 					const $ = cheerio.load(a.diffRowHtml);
 					const columnType =
@@ -167,25 +174,31 @@ router.get("/run-all", async (req, res) => {
 					const newValue =
 						$(".colors-background-success").text().trim() || null;
 
-					parsed.push({
-						uuid: id,
-						issueId: page.id,
-						columnType,
-						oldValue,
-						newValue,
-						createdDate: new Date(a.createdTime),
-						authoredBy: user?.name || a.originatingUserId,
-					});
+					if (["collaborator", "select"].includes(columnType)) {
+						parsed.push({
+							uuid: id,
+							issueId: recordId,
+							columnType,
+							oldValue,
+							newValue,
+							createdDate: new Date(a.createdTime),
+							authoredBy: user?.name || a.originatingUserId,
+						});
+					}
 				}
 
-				await Scraper.create({ recordId: page.id, data: parsed });
-				console.log(`✅ Saved ${parsed.length} activities for ${page.id}`);
+				await Scraper.create({ recordId, data: parsed });
+				console.log(`✅ Saved ${parsed.length} activities for ${recordId}`);
+
+				// small delay to avoid throttling
+				await new Promise((r) => setTimeout(r, 1500));
 			} catch (err) {
-				console.error(`❌ Error scraping ${page.id}:`, err.message);
+				console.error(`❌ Error scraping ${recordId}:`, err.message);
 			}
 		}
 
-		res.send("✅ Finished scraping all pages");
+		await browser.close();
+		res.send("✅ Finished scraping all pages (shared browser mode)");
 	} catch (err) {
 		console.error("❌ run-all error:", err);
 		res.status(500).send(`Scraper failed: ${err.message}`);
