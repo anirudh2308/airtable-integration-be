@@ -7,56 +7,75 @@ import Scraper from "../models/scraper.model.js";
 
 const router = express.Router();
 
-async function loginAndSaveSession() {
+async function loginAndSaveSession(mfaCode = null) {
+	const browser = await puppeteer.launch({
+		headless: false,
+		args: [
+			"--no-sandbox",
+			"--disable-setuid-sandbox",
+			"--disable-blink-features=AutomationControlled",
+			"--window-size=1280,800",
+		],
+	});
+	const page = await browser.newPage();
+	await page.setViewport({ width: 1280, height: 800 });
+	await page.setUserAgent(
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+	);
+
+	await page.goto("https://airtable.com/login", { waitUntil: "networkidle2" });
+
+	await page.waitForSelector('input[name="email"]', {
+		visible: true,
+		timeout: 30000,
+	});
+	await page.type('input[name="email"]', process.env.AIRTABLE_EMAIL, {
+		delay: 50,
+	});
+	await page.click('button[type="submit"]');
+
+	await page.waitForSelector('input[name="password"]', {
+		visible: true,
+		timeout: 30000,
+	});
+	await page.type('input[name="password"]', process.env.AIRTABLE_PASSWORD, {
+		delay: 50,
+	});
+	await page.click('button[type="submit"]');
+
+	// wait for MFA input field
 	try {
-		const browser = await puppeteer.launch({
-			headless: true,
-			args: [
-				"--no-sandbox",
-				"--disable-setuid-sandbox",
-				"--disable-blink-features=AutomationControlled",
-				"--window-size=1280,800",
-				"--start-maximized",
-			],
+		await page.waitForSelector('input[name="code"]', {
+			visible: true,
+			timeout: 15000,
 		});
-		const page = await browser.newPage();
-		await page.setViewport({ width: 1280, height: 800 });
-		await page.setUserAgent(
-			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-		);
 
-		await page.goto("https://airtable.com/login", {
-			waitUntil: "networkidle2",
-		});
-		await page.waitForSelector('input[name="email"]', { visible: true });
-		await page.type('input[name="email"]', process.env.AIRTABLE_EMAIL, {
-			delay: 50,
-		});
+		if (!mfaCode) {
+			throw new Error("MFA code required but not provided");
+		}
+
+		console.log("🔐 Entering MFA code...");
+		await page.type('input[name="code"]', mfaCode, { delay: 50 });
 		await page.click('button[type="submit"]');
-		await page.waitForSelector('input[name="password"]', { visible: true });
-		await page.type('input[name="password"]', process.env.AIRTABLE_PASSWORD, {
-			delay: 50,
-		});
-		await page.click('button[type="submit"]');
-		await page.waitForNavigation({ waitUntil: "networkidle2" });
-
-		const cookies = await page.cookies();
-		const localStorageData = await page.evaluate(() =>
-			Object.assign({}, window.localStorage)
-		);
-
-		fs.writeFileSync("cookies.json", JSON.stringify(cookies, null, 2));
-		fs.writeFileSync(
-			"localStorage.json",
-			JSON.stringify(localStorageData, null, 2)
-		);
-
-		await browser.close();
-		console.log("✅ Session refreshed");
 	} catch (err) {
-		console.error("❌ Login failed:", err.message);
-		throw err;
+		if (!err.message.includes("MFA code"))
+			console.log("No MFA prompt detected, continuing...");
 	}
+
+	await page.waitForNavigation({ waitUntil: "networkidle2" });
+
+	const cookies = await page.cookies();
+	const localStorageData = await page.evaluate(() =>
+		Object.assign({}, window.localStorage)
+	);
+	fs.writeFileSync("cookies.json", JSON.stringify(cookies, null, 2));
+	fs.writeFileSync(
+		"localStorage.json",
+		JSON.stringify(localStorageData, null, 2)
+	);
+
+	await browser.close();
+	console.log("✅ Session refreshed and saved");
 }
 
 async function scrapeRecord(page, recordId) {
@@ -109,12 +128,18 @@ async function scrapeRecord(page, recordId) {
 	return JSON.parse(responseText);
 }
 
-router.get("/login", async (req, res) => {
+router.post("/login", async (req, res) => {
 	try {
-		await loginAndSaveSession();
-		res.send("✅ Logged in and cookies refreshed");
+		const mfaCode = req.body.code || req.query.code;
+		if (!mfaCode) {
+			return res.status(400).send("MFA code is required");
+		}
+
+		await loginAndSaveSession(mfaCode);
+		res.send("✅ Logged in with MFA and cookies refreshed");
 	} catch (err) {
-		res.status(500).send("❌ Login failed");
+		console.error("❌ Login failed:", err);
+		res.status(500).send("Login failed");
 	}
 });
 
