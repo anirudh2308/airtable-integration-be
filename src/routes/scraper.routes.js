@@ -8,8 +8,14 @@ import Scraper from "../models/scraper.model.js";
 
 const router = express.Router();
 
+// ----------------------------
+// Progress tracking variables
+// ----------------------------
+let scraperRunning = false;
+let lastRunSummary = null;
+
 /* --------------------------------------------------
- * 🧩 Optimized login with MFA (fast + async)
+ * 🧩 Optimized login with MFA
  * -------------------------------------------------- */
 async function loginAndSaveSession(mfaCode = null) {
 	const browser = await puppeteer.launch({
@@ -150,13 +156,11 @@ router.post("/login", async (req, res) => {
 				.json({ success: false, message: "MFA code is required" });
 		}
 
-		// respond immediately so Angular doesn’t timeout
 		res.status(200).json({
 			success: true,
 			message: "MFA login initiated — saving session in background.",
 		});
 
-		// run login asynchronously
 		loginAndSaveSession(mfaCode)
 			.then(() => console.log("✅ Background login finished."))
 			.catch((err) => console.error("❌ Background login error:", err.message));
@@ -167,10 +171,53 @@ router.post("/login", async (req, res) => {
 });
 
 /* --------------------------------------------------
+ * 📡 Status & Progress Routes
+ * -------------------------------------------------- */
+router.get("/status", (req, res) => {
+	try {
+		const cookiesExist = fs.existsSync("cookies.json");
+		const localStorageExist = fs.existsSync("localStorage.json");
+		res.json({
+			success: true,
+			loggedIn: cookiesExist && localStorageExist,
+			message: cookiesExist ? "Session active" : "Session not ready",
+		});
+	} catch (err) {
+		res
+			.status(500)
+			.json({ success: false, loggedIn: false, message: err.message });
+	}
+});
+
+router.get("/progress", (req, res) => {
+	res.json({
+		success: true,
+		running: scraperRunning,
+		summary: lastRunSummary || null,
+	});
+});
+
+router.get("/all", async (req, res) => {
+	try {
+		const allScraped = await Scraper.find({});
+		res.json({
+			success: true,
+			count: allScraped.length,
+			data: allScraped,
+		});
+	} catch (err) {
+		res.status(500).json({ success: false, message: err.message });
+	}
+});
+
+/* --------------------------------------------------
  * 🧩 Run scraper for all bases & pages
  * -------------------------------------------------- */
 router.get("/run-all", async (req, res) => {
 	try {
+		scraperRunning = true;
+		lastRunSummary = null;
+
 		const bases = await Base.find({});
 		if (!bases.length) return res.status(404).send("No bases found");
 
@@ -205,7 +252,7 @@ router.get("/run-all", async (req, res) => {
 				const recordId = doc.id;
 				console.log(`🧩 Scraping record ${recordId}...`);
 				try {
-					const data = await scrapeRecord(page, recordId, baseId);
+					let data = await scrapeRecord(page, recordId, baseId);
 					const info = data.data;
 					const ordered = info.orderedActivityAndCommentIds || [];
 					const activities = info.rowActivityInfoById || {};
@@ -217,34 +264,28 @@ router.get("/run-all", async (req, res) => {
 						if (!a) continue;
 						const user = users[a.originatingUserId];
 						const $ = cheerio.load(a.diffRowHtml);
-						const cell = $(".historicalCellValue");
+						const columnType =
+							$(".historicalCellValue").attr("data-columntype") || null;
+						const oldValue =
+							$(".colors-background-negative, .diffOldValue").text().trim() ||
+							null;
+						const newValue =
+							$(".colors-background-success, .diffNewValue").text().trim() ||
+							null;
 
-						const columnType = cell.attr("data-columntype") || null;
-						if (!["collaborator", "select"].includes(columnType)) continue;
-
-						let oldValue =
-							$(".colors-background-negative").text().trim() || null;
-						let newValue =
-							$(".colors-background-success").text().trim() || null;
-
-						// fallback for plain text diffs
-						if (!oldValue && !newValue && cell.length) {
-							const text = cell.text().trim();
-							if (text) newValue = text;
+						if (["collaborator", "select"].includes(columnType)) {
+							parsed.push({
+								uuid: id,
+								issueId: recordId,
+								columnType,
+								oldValue,
+								newValue,
+								createdDate: new Date(a.createdTime),
+								authoredBy: user?.name || a.originatingUserId,
+							});
 						}
-
-						parsed.push({
-							uuid: id,
-							issueId: recordId,
-							columnType,
-							oldValue,
-							newValue,
-							createdDate: new Date(a.createdTime),
-							authoredBy: user?.name || a.originatingUserId,
-						});
 					}
 
-					// ✅ Upsert instead of create
 					await Scraper.findOneAndUpdate(
 						{ recordId },
 						{ recordId, baseId, data: parsed },
@@ -253,7 +294,7 @@ router.get("/run-all", async (req, res) => {
 
 					totalParsed += parsed.length;
 					console.log(`✅ Saved ${parsed.length} activities for ${recordId}`);
-					await new Promise((r) => setTimeout(r, 800)); // short delay
+					await new Promise((r) => setTimeout(r, 800));
 				} catch (err) {
 					console.error(`❌ Error scraping ${recordId}:`, err.message);
 				}
@@ -261,69 +302,15 @@ router.get("/run-all", async (req, res) => {
 		}
 
 		await browser.close();
+		lastRunSummary = { message: "Scraper complete", totalParsed };
+		scraperRunning = false;
+
 		console.log("✅ Finished scraping all bases.");
-		res.json({ success: true, message: "Scraper complete", totalParsed });
+		res.json({ success: true, ...lastRunSummary });
 	} catch (err) {
+		scraperRunning = false;
 		console.error("❌ run-all error:", err);
 		res.status(500).json({ success: false, message: err.message });
-	}
-});
-
-/* --------------------------------------------------
- * 🧾 Scrape one record (manual test)
- * -------------------------------------------------- */
-router.get("/:recordId", async (req, res) => {
-	const { recordId } = req.params;
-	try {
-		const pageDoc = await Page.findOne({ id: recordId });
-		if (!pageDoc) return res.status(404).send("Record not found");
-
-		const baseId = pageDoc.baseId;
-
-		const browser = await puppeteer.launch({ headless: true });
-		const page = await browser.newPage();
-
-		const data = await scrapeRecord(page, recordId, baseId);
-		const info = data.data;
-		const ordered = info.orderedActivityAndCommentIds || [];
-		const activities = info.rowActivityInfoById || {};
-		const users = info.rowActivityOrCommentUserObjById || {};
-
-		const parsed = [];
-		for (const id of ordered) {
-			const a = activities[id];
-			if (!a) continue;
-			const user = users[a.originatingUserId];
-			const $ = cheerio.load(a.diffRowHtml);
-			const cell = $(".historicalCellValue");
-
-			const columnType = cell.attr("data-columntype") || null;
-			if (!["collaborator", "select"].includes(columnType)) continue;
-
-			let oldValue = $(".colors-background-negative").text().trim() || null;
-			let newValue = $(".colors-background-success").text().trim() || null;
-
-			if (!oldValue && !newValue && cell.length) {
-				const text = cell.text().trim();
-				if (text) newValue = text;
-			}
-
-			parsed.push({
-				uuid: id,
-				issueId: recordId,
-				columnType,
-				oldValue,
-				newValue,
-				createdDate: new Date(a.createdTime),
-				authoredBy: user?.name || a.originatingUserId,
-			});
-		}
-
-		await browser.close();
-		res.json({ count: parsed.length, data: parsed });
-	} catch (err) {
-		console.error("❌ Scraper error:", err);
-		res.status(500).send(`Scraper failed: ${err.message}`);
 	}
 });
 
