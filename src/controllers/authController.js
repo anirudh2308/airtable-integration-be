@@ -55,12 +55,37 @@ export const airtableCallback = async (req, res) => {
 		await Integration.create(tokenData);
 
 		console.log("Airtable token stored successfully!");
-		res.send("OAuth successful! Token saved to DB, you can close this tab.");
+		res.send(`
+  <html>
+    <body style="font-family: sans-serif; text-align: center; padding-top: 30px;">
+      <h3>✅ OAuth successful! You can close this window.</h3>
+      <script>
+        window.opener && window.opener.postMessage('oauth-success', '*');
+        window.close();
+      </script>
+    </body>
+  </html>
+`);
 	} catch (err) {
 		console.error(
 			"OAuth token exchange failed:",
 			err.response?.data || err.message
 		);
 		res.status(500).send("OAuth failed.");
+	}
+};
+
+export const airtableStatus = async (req, res) => {
+	try {
+		const integration = await Integration.findOne();
+		if (!integration) return res.json({ connected: false, connectedAt: null });
+
+		res.json({
+			connected: true,
+			connectedAt: integration.createdAt || new Date(),
+		});
+	} catch (err) {
+		console.error("Status check failed:", err.message);
+		res.status(500).send("Failed to fetch Airtable status");
 	}
 };

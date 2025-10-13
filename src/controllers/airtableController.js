@@ -4,139 +4,116 @@ import Base from "../models/base.model.js";
 import Table from "../models/table.model.js";
 import Page from "../models/page.model.js";
 
-// Getting Bases
-export const getBases = async (req, res) => {
+// Fetch all Bases, Tables, and Records in one go
+export const fetchAll = async (req, res) => {
 	try {
 		const integration = await Integration.findOne();
 		if (!integration) return res.status(401).send("No access token found");
 
 		const accessToken = integration.access_token;
-		let allBases = [];
-		let offset = null;
+		const headers = { Authorization: `Bearer ${accessToken}` };
 
+		let allBases = [];
+		let allTables = [];
+		let allRecords = [];
+
+		console.log("🚀 Starting full Airtable sync...");
+
+		// Step 1: Fetch all bases
+		let baseOffset = null;
 		do {
 			const url = `https://api.airtable.com/v0/meta/bases${
-				offset ? `?offset=${offset}` : ""
+				baseOffset ? `?offset=${baseOffset}` : ""
 			}`;
-			const response = await axios.get(url, {
-				headers: { Authorization: `Bearer ${accessToken}` },
-			});
-
-			const bases = response.data.bases || [];
+			const baseRes = await axios.get(url, { headers });
+			const bases = baseRes.data.bases || [];
 			allBases.push(...bases);
-			offset = response.data.offset;
+			baseOffset = baseRes.data.offset;
 
 			for (const b of bases) {
 				await Base.findOneAndUpdate(
 					{ id: b.id },
-					{
-						name: b.name,
-						permissionLevel: b.permissionLevel,
-					},
+					{ name: b.name, permissionLevel: b.permissionLevel },
 					{ upsert: true, new: true }
 				);
 			}
-		} while (offset);
+		} while (baseOffset);
 
-		console.log(`Stored ${allBases.length} bases.`);
-		res.json(allBases);
+		console.log(`✅ Stored ${allBases.length} bases.`);
+
+		// Step 2: For each base, fetch tables
+		for (const base of allBases) {
+			let tableOffset = null;
+			do {
+				const tableUrl = `https://api.airtable.com/v0/meta/bases/${
+					base.id
+				}/tables${tableOffset ? `?offset=${tableOffset}` : ""}`;
+				const tableRes = await axios.get(tableUrl, { headers });
+				const tables = tableRes.data.tables || [];
+				const enrichedTables = tables.map((t) => ({ ...t, baseId: base.id }));
+				allTables.push(...enrichedTables);
+
+				tableOffset = tableRes.data.offset;
+
+				for (const t of tables) {
+					await Table.findOneAndUpdate(
+						{ id: t.id },
+						{
+							baseId: base.id,
+							name: t.name,
+							primaryFieldId: t.primaryFieldId,
+							fields: t.fields,
+						},
+						{ upsert: true, new: true }
+					);
+				}
+			} while (tableOffset);
+
+			console.log(`📦 Stored ${allTables.length} tables for base ${base.name}`);
+		}
+
+		// Step 3: For each table, fetch first N records (limit 100 each)
+		for (const table of allTables) {
+			let recordOffset = null;
+			let recordCount = 0;
+
+			do {
+				const recordUrl = `https://api.airtable.com/v0/${table.baseId}/${
+					table.id
+				}${recordOffset ? `?offset=${recordOffset}` : ""}`;
+				console.log(allTables);
+				const recordRes = await axios.get(recordUrl, { headers });
+				const records = recordRes.data.records || [];
+				allRecords.push(...records);
+				recordOffset = recordRes.data.offset;
+				recordCount += records.length;
+
+				for (const r of records) {
+					await Page.findOneAndUpdate(
+						{ id: r.id },
+						{
+							baseId: table.baseId,
+							tableId: table.id,
+							fields: r.fields,
+							createdTime: r.createdTime,
+						},
+						{ upsert: true, new: true }
+					);
+				}
+			} while (recordOffset);
+
+			console.log(`📄 Stored ${recordCount} records for table ${table.name}`);
+		}
+
+		console.log("✅ Full Airtable sync complete!");
+		res.json({
+			success: true,
+			bases: allBases.length,
+			tables: allTables.length,
+			records: allRecords.length,
+		});
 	} catch (err) {
-		console.error("Error fetching bases:", err.response?.data || err.message);
-		res.status(500).send("Failed to fetch bases");
-	}
-};
-
-// Getting Tables for a Base
-export const getTables = async (req, res) => {
-	const { baseId } = req.params;
-
-	try {
-		const integration = await Integration.findOne();
-		if (!integration) return res.status(401).send("No access token found");
-
-		const accessToken = integration.access_token;
-		let allTables = [];
-		let offset = null;
-
-		do {
-			const url = `https://api.airtable.com/v0/meta/bases/${baseId}/tables${
-				offset ? `?offset=${offset}` : ""
-			}`;
-			const response = await axios.get(url, {
-				headers: { Authorization: `Bearer ${accessToken}` },
-			});
-
-			const tables = response.data.tables || [];
-			allTables.push(...tables);
-			offset = response.data.offset;
-
-			for (const t of tables) {
-				await Table.findOneAndUpdate(
-					{ id: t.id },
-					{
-						baseId,
-						name: t.name,
-						primaryFieldId: t.primaryFieldId,
-						fields: t.fields,
-					},
-					{ upsert: true, new: true, runValidators: true }
-				);
-			}
-		} while (offset);
-
-		console.log(`Stored ${allTables.length} tables for base ${baseId}`);
-		res.json(allTables);
-	} catch (err) {
-		console.error("Error fetching tables:", err.response?.data || err.message);
-		res.status(500).send("Failed to fetch tables");
-	}
-};
-
-// Getting pages (records) for a Table in a Base
-export const getPages = async (req, res) => {
-	const { baseId, tableId } = req.params;
-
-	try {
-		const integration = await Integration.findOne();
-		if (!integration) return res.status(401).send("No access token found");
-
-		const accessToken = integration.access_token;
-		let allRecords = [];
-		let offset = null;
-
-		do {
-			const url = `https://api.airtable.com/v0/${baseId}/${tableId}${
-				offset ? `?offset=${offset}` : ""
-			}`;
-
-			const response = await axios.get(url, {
-				headers: { Authorization: `Bearer ${accessToken}` },
-			});
-
-			const records = response.data.records || [];
-			allRecords.push(...records);
-			offset = response.data.offset;
-
-			for (const r of records) {
-				await Page.findOneAndUpdate(
-					{ id: r.id },
-					{
-						baseId,
-						tableId,
-						fields: r.fields,
-						createdTime: r.createdTime,
-					},
-					{ upsert: true, new: true }
-				);
-			}
-		} while (offset);
-
-		console.log(
-			`Stored ${allRecords.length} pages (records) for table ${tableId}`
-		);
-		res.json({ count: allRecords.length });
-	} catch (err) {
-		console.error("Error fetching pages:", err.response?.data || err.message);
-		res.status(500).send("Failed to fetch pages");
+		console.error("❌ Error in fetchAll:", err.response?.data || err.message);
+		res.status(500).send("Failed to fetch all Airtable data");
 	}
 };
