@@ -191,7 +191,7 @@ export const getStatus = async (req, res) => {
 		await browser.close();
 
 		if (currentUrl.includes("/login")) {
-			console.warn("⚠️ Session expired — redirected to login.");
+			console.warn("Session expired — redirected to login.");
 			return res.json({
 				success: true,
 				loggedIn: false,
