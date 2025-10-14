@@ -77,10 +77,15 @@ export const fetchAll = async (req, res) => {
 				const recordUrl = `https://api.airtable.com/v0/${table.baseId}/${
 					table.id
 				}${recordOffset ? `?offset=${recordOffset}` : ""}`;
-				console.log(allTables);
 				const recordRes = await axios.get(recordUrl, { headers });
 				const records = recordRes.data.records || [];
-				allRecords.push(...records);
+				allRecords.push(
+					...records.map((r) => ({
+						...r,
+						baseId: table.baseId,
+						tableId: table.id,
+					}))
+				);
 				recordOffset = recordRes.data.offset;
 				recordCount += records.length;
 
@@ -104,12 +109,34 @@ export const fetchAll = async (req, res) => {
 		console.log("Full Airtable sync complete!");
 		res.json({
 			success: true,
-			bases: allBases.length,
-			tables: allTables.length,
-			records: allRecords.length,
+			message: "Full Airtable sync complete",
+			bases: allBases,
+			tables: allTables,
+			records: allRecords,
 		});
 	} catch (err) {
 		console.error("Error in fetchAll:", err.response?.data || err.message);
 		res.status(500).send("Failed to fetch all Airtable data");
+	}
+};
+
+export const getAllFromDB = async (req, res) => {
+	try {
+		const bases = await Base.find().lean();
+		const tables = await Table.find().lean();
+		const records = await Page.find().lean();
+
+		res.json({
+			success: true,
+			bases,
+			tables,
+			records,
+		});
+	} catch (err) {
+		console.error("Error fetching data from DB:", err.message);
+		res.status(500).json({
+			success: false,
+			message: "Failed to fetch data from database",
+		});
 	}
 };

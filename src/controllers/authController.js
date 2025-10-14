@@ -56,16 +56,16 @@ export const airtableCallback = async (req, res) => {
 
 		console.log("Airtable token stored successfully!");
 		res.send(`
-  <html>
-    <body style="font-family: sans-serif; text-align: center; padding-top: 30px;">
-      <h3>OAuth successful! You can close this window.</h3>
-      <script>
-        window.opener && window.opener.postMessage('oauth-success', '*');
-        window.close();
-      </script>
-    </body>
-  </html>
-`);
+			<html>
+				<body style="font-family: sans-serif; text-align: center; padding-top: 30px;">
+					<h3>OAuth successful! You can close this window.</h3>
+					<script>
+						window.opener && window.opener.postMessage('oauth-success', '*');
+						window.close();
+					</script>
+				</body>
+			</html>
+		`);
 	} catch (err) {
 		console.error(
 			"OAuth token exchange failed:",
@@ -78,14 +78,46 @@ export const airtableCallback = async (req, res) => {
 export const airtableStatus = async (req, res) => {
 	try {
 		const integration = await Integration.findOne();
-		if (!integration) return res.json({ connected: false, connectedAt: null });
+		if (!integration)
+			return res.json({
+				connected: false,
+				tokenValid: false,
+				message: "Not connected: no stored integration.",
+			});
 
-		res.json({
-			connected: true,
-			connectedAt: integration.createdAt || new Date(),
-		});
+		const accessToken = integration.access_token;
+
+		try {
+			const resp = await axios.get("https://api.airtable.com/v0/meta/bases", {
+				headers: { Authorization: `Bearer ${accessToken}` },
+			});
+
+			if (resp.status === 200) {
+				return res.json({
+					connected: true,
+					tokenValid: true,
+					connectedAt: integration.createdAt || new Date(),
+					message: "Token valid and connection active.",
+				});
+			}
+		} catch (err) {
+			if (err.response?.status === 401) {
+				console.warn("Airtable token expired or revoked.");
+				return res.json({
+					connected: true,
+					tokenValid: false,
+					connectedAt: integration.createdAt || new Date(),
+					message: "Token expired or unauthorized.",
+				});
+			}
+			throw err;
+		}
 	} catch (err) {
 		console.error("Status check failed:", err.message);
-		res.status(500).send("Failed to fetch Airtable status");
+		res.status(500).json({
+			connected: false,
+			tokenValid: false,
+			message: "Server error while checking Airtable status.",
+		});
 	}
 };
