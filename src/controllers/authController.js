@@ -58,7 +58,7 @@ export const airtableCallback = async (req, res) => {
 		res.send(`
   <html>
     <body style="font-family: sans-serif; text-align: center; padding-top: 30px;">
-      <h3>✅ OAuth successful! You can close this window.</h3>
+      <h3>OAuth successful! You can close this window.</h3>
       <script>
         window.opener && window.opener.postMessage('oauth-success', '*');
         window.close();

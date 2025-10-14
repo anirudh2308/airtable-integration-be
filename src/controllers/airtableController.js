@@ -4,7 +4,6 @@ import Base from "../models/base.model.js";
 import Table from "../models/table.model.js";
 import Page from "../models/page.model.js";
 
-// Fetch all Bases, Tables, and Records in one go
 export const fetchAll = async (req, res) => {
 	try {
 		const integration = await Integration.findOne();
@@ -17,9 +16,8 @@ export const fetchAll = async (req, res) => {
 		let allTables = [];
 		let allRecords = [];
 
-		console.log("🚀 Starting full Airtable sync...");
+		console.log("Starting full Airtable sync...");
 
-		// Step 1: Fetch all bases
 		let baseOffset = null;
 		do {
 			const url = `https://api.airtable.com/v0/meta/bases${
@@ -39,9 +37,8 @@ export const fetchAll = async (req, res) => {
 			}
 		} while (baseOffset);
 
-		console.log(`✅ Stored ${allBases.length} bases.`);
+		console.log(`Stored ${allBases.length} bases.`);
 
-		// Step 2: For each base, fetch tables
 		for (const base of allBases) {
 			let tableOffset = null;
 			do {
@@ -69,10 +66,9 @@ export const fetchAll = async (req, res) => {
 				}
 			} while (tableOffset);
 
-			console.log(`📦 Stored ${allTables.length} tables for base ${base.name}`);
+			console.log(`Stored ${allTables.length} tables for base ${base.name}`);
 		}
 
-		// Step 3: For each table, fetch first N records (limit 100 each)
 		for (const table of allTables) {
 			let recordOffset = null;
 			let recordCount = 0;
@@ -102,10 +98,10 @@ export const fetchAll = async (req, res) => {
 				}
 			} while (recordOffset);
 
-			console.log(`📄 Stored ${recordCount} records for table ${table.name}`);
+			console.log(`Stored ${recordCount} records for table ${table.name}`);
 		}
 
-		console.log("✅ Full Airtable sync complete!");
+		console.log("Full Airtable sync complete!");
 		res.json({
 			success: true,
 			bases: allBases.length,
@@ -113,7 +109,7 @@ export const fetchAll = async (req, res) => {
 			records: allRecords.length,
 		});
 	} catch (err) {
-		console.error("❌ Error in fetchAll:", err.response?.data || err.message);
+		console.error("Error in fetchAll:", err.response?.data || err.message);
 		res.status(500).send("Failed to fetch all Airtable data");
 	}
 };
