@@ -155,19 +155,63 @@ export const mfaLogin = async (req, res) => {
 	}
 };
 
-export const getStatus = (req, res) => {
+export const getStatus = async (req, res) => {
 	try {
 		const cookiesExist = fs.existsSync("cookies.json");
 		const localStorageExist = fs.existsSync("localStorage.json");
-		res.json({
+
+		if (!cookiesExist || !localStorageExist) {
+			return res.json({
+				success: true,
+				loggedIn: false,
+				message: "No stored session found.",
+			});
+		}
+
+		const cookies = JSON.parse(fs.readFileSync("cookies.json", "utf8"));
+		const localStorageData = JSON.parse(
+			fs.readFileSync("localStorage.json", "utf8")
+		);
+
+		const browser = await puppeteer.launch({
+			headless: true,
+			args: ["--no-sandbox", "--disable-setuid-sandbox"],
+		});
+		const page = await browser.newPage();
+
+		await page.setCookie(...cookies);
+		await page.goto("https://airtable.com/", { waitUntil: "domcontentloaded" });
+		await page.evaluate((data) => {
+			for (const [key, value] of Object.entries(data)) {
+				localStorage.setItem(key, value);
+			}
+		}, localStorageData);
+
+		const currentUrl = page.url();
+		await browser.close();
+
+		if (currentUrl.includes("/login")) {
+			console.warn("⚠️ Session expired — redirected to login.");
+			return res.json({
+				success: true,
+				loggedIn: false,
+				message: "Session expired or invalid.",
+			});
+		}
+
+		console.log("Session still valid — cookies work in browser context.");
+		return res.json({
 			success: true,
-			loggedIn: cookiesExist && localStorageExist,
-			message: cookiesExist ? "Session active" : "Session not ready",
+			loggedIn: true,
+			message: "Session active and cookies valid.",
 		});
 	} catch (err) {
-		res
-			.status(500)
-			.json({ success: false, loggedIn: false, message: err.message });
+		console.error("getStatus failed:", err.message);
+		res.status(500).json({
+			success: false,
+			loggedIn: false,
+			message: "Server error while checking session.",
+		});
 	}
 };
 
