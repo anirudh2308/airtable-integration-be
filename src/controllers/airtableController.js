@@ -106,6 +106,23 @@ export const fetchAll = async (req, res) => {
 			console.log(`Stored ${recordCount} records for table ${table.name}`);
 		}
 
+		const userMap = new Map();
+		for (const record of allRecords) {
+			const assignee = record.fields?.Assignee;
+			if (assignee && typeof assignee === "object") {
+				const id = assignee.id || assignee.name;
+				if (!userMap.has(id)) {
+					userMap.set(id, {
+						id: assignee.id || null,
+						name: assignee.name || "Unknown",
+						email: assignee.email || "N/A",
+					});
+				}
+			}
+		}
+
+		const allUsers = Array.from(userMap.values());
+
 		console.log("Full Airtable sync complete!");
 		res.json({
 			success: true,
@@ -113,6 +130,7 @@ export const fetchAll = async (req, res) => {
 			bases: allBases,
 			tables: allTables,
 			records: allRecords,
+			users: allUsers,
 		});
 	} catch (err) {
 		console.error("Error in fetchAll:", err.response?.data || err.message);
@@ -126,11 +144,29 @@ export const getAllFromDB = async (req, res) => {
 		const tables = await Table.find().lean();
 		const records = await Page.find().lean();
 
+		const userMap = new Map();
+		for (const record of records) {
+			const assignee = record.fields?.Assignee;
+			if (assignee && typeof assignee === "object") {
+				const id = assignee.id || assignee.name;
+				if (!userMap.has(id)) {
+					userMap.set(id, {
+						id: assignee.id || null,
+						name: assignee.name || "Unknown",
+						email: assignee.email || "N/A",
+					});
+				}
+			}
+		}
+
+		const users = Array.from(userMap.values());
+
 		res.json({
 			success: true,
 			bases,
 			tables,
 			records,
+			users,
 		});
 	} catch (err) {
 		console.error("Error fetching data from DB:", err.message);
