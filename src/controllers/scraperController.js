@@ -240,15 +240,27 @@ export const runAll = async (req, res) => {
 						const a = activities[id];
 						if (!a) continue;
 						const user = users[a.originatingUserId];
-						const $ = cheerio.load(a.diffRowHtml);
-						const columnType =
-							$(".historicalCellValue").attr("data-columntype") || null;
-						const oldValue =
-							$(".colors-background-negative, .diffOldValue").text().trim() ||
-							null;
-						const newValue =
-							$(".colors-background-success, .diffNewValue").text().trim() ||
-							null;
+						const $ = cheerio.load(a.diffRowHtml || "");
+						const container = $(".historicalCellValue");
+						const columnType = container.attr("data-columntype") || null;
+
+						let oldValue = null;
+						let newValue = null;
+
+						if ($(".diffOldValue").length || $(".diffNewValue").length) {
+							oldValue =
+								$(".diffOldValue, .colors-background-negative").text().trim() ||
+								null;
+							newValue =
+								$(".diffNewValue, .colors-background-success").text().trim() ||
+								null;
+						} else if (container.hasClass("nullToValue")) {
+							newValue = container.text().trim() || null;
+						} else if (container.hasClass("valueToNull")) {
+							oldValue = container.text().trim() || null;
+						} else if (container.text().trim()) {
+							newValue = container.text().trim();
+						}
 
 						if (["collaborator", "select"].includes(columnType)) {
 							parsed.push({
@@ -265,7 +277,7 @@ export const runAll = async (req, res) => {
 
 					await Scraper.findOneAndUpdate(
 						{ recordId },
-						{ recordId, baseId, data: parsed },
+						{ recordId, data: parsed },
 						{ upsert: true, new: true }
 					);
 
