@@ -215,27 +215,6 @@ export const getStatus = async (req, res) => {
 	}
 };
 
-export const getProgress = (req, res) => {
-	res.json({
-		success: true,
-		running: scraperRunning,
-		summary: lastRunSummary || null,
-	});
-};
-
-export const fetchAll = async (req, res) => {
-	try {
-		const allScraped = await Scraper.find({});
-		res.json({
-			success: true,
-			count: allScraped.length,
-			data: allScraped,
-		});
-	} catch (err) {
-		res.status(500).json({ success: false, message: err.message });
-	}
-};
-
 export const runAll = async (req, res) => {
 	try {
 		scraperRunning = true;
@@ -302,6 +281,19 @@ export const runAll = async (req, res) => {
 							newValue = container.text().trim() || null;
 						} else if (container.hasClass("valueToNull")) {
 							oldValue = container.text().trim() || null;
+						} else if (
+							container.hasClass("diff") &&
+							container.find("div[title]").length >= 1
+						) {
+							const titles = container
+								.find("div[title]")
+								.map((i, el) => $(el).attr("title"))
+								.get();
+							if (titles.length === 1) newValue = titles[0];
+							else if (titles.length >= 2) {
+								newValue = titles[0];
+								oldValue = titles[1];
+							}
 						} else if (container.text().trim()) {
 							newValue = container.text().trim();
 						}
@@ -345,4 +337,25 @@ export const runAll = async (req, res) => {
 		console.error("run-all error:", err);
 		res.status(500).json({ success: false, message: err.message });
 	}
+};
+
+export const fetchAll = async (req, res) => {
+	try {
+		const allScraped = await Scraper.find({});
+		res.json({
+			success: true,
+			count: allScraped.length,
+			data: allScraped,
+		});
+	} catch (err) {
+		res.status(500).json({ success: false, message: err.message });
+	}
+};
+
+export const getProgress = (req, res) => {
+	res.json({
+		success: true,
+		running: scraperRunning,
+		summary: lastRunSummary || null,
+	});
 };
